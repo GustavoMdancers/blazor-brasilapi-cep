@@ -1,0 +1,126 @@
+﻿@page "/"
+@using System.Net
+@using System.Net.Http.Json
+@using BlazorBrasilApiCep.Models
+@inject HttpClient Http
+
+<PageTitle>Consulta CEP - BrasilAPI</PageTitle>
+
+<h1>Consulta de CEP com Blazor WebAssembly</h1>
+
+<div class="row mb-3">
+    <div class="col-md-4">
+        <label for="cepInput" class="form-label">Digite o CEP:</label>
+        <input id="cepInput" class="form-control" @bind="cepDigitado" @bind:event="oninput" @onkeyup="OnKeyUp"
+               placeholder="Ex: 01001000" maxlength="9" />
+    </div>
+    <div class="col-md-2 d-flex align-items-end">
+        <button class="btn btn-primary w-100" @onclick="ConsultarCep" disabled="@carregando">
+            @(carregando ? "Buscando..." : "Consultar")
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(mensagemErro))
+{
+    <div class="alert alert-danger" role="alert">
+        @mensagemErro
+    </div>
+}
+
+@if (resultado is not null)
+{
+    <div class="card">
+        <div class="card-body">
+            <h4 class="card-title text-success">Endereço Encontrado</h4>
+            <p><strong>CEP:</strong> @resultado.cep</p>
+            <p><strong>Logradouro:</strong> @resultado.street</p>
+            <p><strong>Bairro:</strong> @resultado.neighborhood</p>
+            <p><strong>Cidade:</strong> @resultado.city (@resultado.state)</p>
+            <p><strong>Serviço:</strong> @resultado.service</p>
+
+            @if (resultado.ibge is not null)
+            {
+                <hr />
+                <h5 class="text-muted">Dados do IBGE</h5>
+                <p><strong>Cidade IBGE:</strong> @resultado.ibge.city</p>
+                <p><strong>Estado IBGE:</strong> @resultado.ibge.state</p>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private string cepDigitado = string.Empty;
+    private Cep? resultado;
+    private string? mensagemErro;
+    private bool carregando;
+
+    private async Task OnKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await ConsultarCep();
+    }
+
+    private async Task ConsultarCep()
+    {
+        mensagemErro = null;
+        resultado = null;
+
+        // Mantém apenas os dígitos (aceita "30130-000" também)
+        var cepLimpo = new string(cepDigitado.Where(char.IsDigit).ToArray());
+
+        if (cepLimpo.Length != 8)
+        {
+            mensagemErro = "Informe um CEP válido com 8 dígitos.";
+            return;
+        }
+
+        carregando = true;
+
+        try
+        {
+            var response = await Http.GetAsync($"cep/v1/{cepLimpo}");
+
+            // Fallback: a v2 usa outros provedores
+            if (!response.IsSuccessStatusCode)
+                response = await Http.GetAsync($"cep/v2/{cepLimpo}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                resultado = await response.Content.ReadFromJsonAsync<Cep>();
+            }
+            else
+            {
+                // Detalhes técnicos vão só para o console do navegador (F12)
+                var corpo = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(
+                    $"[CEP] {response.RequestMessage?.RequestUri} -> {(int)response.StatusCode}: " +
+                    $"{(corpo.Length > 300 ? corpo[..300] + "..." : corpo)}");
+
+                mensagemErro = MensagemAmigavel(response.StatusCode);
+            }
+        }
+        catch (HttpRequestException)
+        {
+            mensagemErro = "Não foi possível conectar à BrasilAPI. Verifique sua conexão.";
+        }
+        catch (Exception ex)
+        {
+            mensagemErro = $"Erro inesperado: {ex.Message}";
+        }
+        finally
+        {
+            carregando = false;
+        }
+    }
+
+    private static string MensagemAmigavel(HttpStatusCode status) => status switch
+    {
+        HttpStatusCode.NotFound => "CEP não encontrado. Confira o número e tente novamente.",
+        HttpStatusCode.BadRequest => "CEP inválido. Digite 8 números.",
+        HttpStatusCode.TooManyRequests => "Muitas consultas seguidas. Aguarde um instante e tente de novo.",
+        >= HttpStatusCode.InternalServerError => "O serviço de CEP está indisponível no momento. Tente novamente em instantes.",
+        _ => $"Não foi possível consultar o CEP (código {(int)status})."
+    };
+}
